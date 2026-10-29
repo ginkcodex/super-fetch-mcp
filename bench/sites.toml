@@ -1,0 +1,76 @@
+# Real sites for bench/run.py. `expect` is text that only shows up when the real page came through.
+# Mark sites `flaky` when they judge IP reputation, so a block there isn't counted as a regression.
+
+[[site]]
+name = "example"
+category = "static"
+url = "https://example.com/"
+expect = "documentation examples"
+
+[[site]]
+name = "wikipedia"
+category = "static"
+url = "https://en.wikipedia.org/wiki/Web_scraping"
+expect = "data scraping"
+
+[[site]]
+name = "python-docs"
+category = "static"
+url = "https://docs.python.org/3/library/asyncio.html"
+expect = "async/await"
+
+[[site]]
+name = "hacker-news"
+category = "static"
+url = "https://news.ycombinator.com/"
+expect = "points by"
+
+[[site]]
+name = "quotes-js"
+category = "spa"
+url = "https://quotes.toscrape.com/js/"
+expect = "Albert Einstein"
+
+[[site]]
+name = "scrapingcourse-js"
+category = "spa"
+url = "https://www.scrapingcourse.com/javascript-rendering"
+expect = "Chaz Kangeroo Hoodie"
+
+[[site]]
+name = "arxiv-pdf"
+category = "pdf"
+url = "https://arxiv.org/pdf/1706.03762"
+expect = "Attention Is All You Need"
+
+[[site]]
+name = "stackoverflow"
+category = "cloudflare"
+url = "https://stackoverflow.com/questions/tagged/python"
+expect = "asked"
+
+[[site]]
+name = "scrapingcourse-cf"
+category = "cloudflare"
+url = "https://www.scrapingcourse.com/cloudflare-challenge"
+expect = "You bypassed the Cloudflare challenge"
+
+[[site]]
+name = "scrapingcourse-antibot"
+category = "antibot"
+url = "https://www.scrapingcourse.com/antibot-challenge"
+expect = "You bypassed the Antibot challenge"
+
+[[site]]
+name = "etsy"
+category = "datadome"
+url = "https://www.etsy.com/search?q=mug"
+expect = "mug"
+flaky = true
+
+[[site]]
+name = "reddit"
+category = "other"
+url = "https://www.reddit.com/r/Python/"
+expect = "r/Python"
+flaky = true

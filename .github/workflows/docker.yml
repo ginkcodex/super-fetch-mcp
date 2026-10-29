@@ -1,0 +1,44 @@
+name: Docker
+
+on:
+  push:
+    branches: [main]
+    paths: [Dockerfile, .dockerignore, pyproject.toml, uv.lock, "src/**", docker-compose.yml, .github/workflows/docker.yml]
+  pull_request:
+    paths: [Dockerfile, .dockerignore, pyproject.toml, uv.lock, "src/**", docker-compose.yml, .github/workflows/docker.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      # No layer cache: the browser layer alone would crowd the CI test job's cache out of the
+      # repository's cache quota.
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: super-fetch:ci
+      - name: Smoke test (browser starts on Xvfb inside the image)
+        run: |
+          docker run --rm --shm-size 1g super-fetch:ci fetch https://example.com/ --render always | tee out.txt
+          grep -q "Fetched-With: browser (virtual)" out.txt
+      - name: Smoke test (serve --http answers only with the token)
+        run: |
+          token=$(openssl rand -hex 32)
+          docker run -d --name http --shm-size 1g -p 127.0.0.1:8000:8000 \
+            -e SUPER_FETCH_HTTP_HOST=0.0.0.0 -e SUPER_FETCH_HTTP_TOKEN="$token" super-fetch:ci serve --http
+          for _ in $(seq 30); do curl -s -o /dev/null http://127.0.0.1:8000/mcp && break; sleep 1; done
+          init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"ci","version":"0"}}}'
+          mcp() { curl -s http://127.0.0.1:8000/mcp -H "Content-Type: application/json" \
+            -H "Accept: application/json, text/event-stream" -d "$init" "$@"; }
+          test "$(mcp -o /dev/null -w '%{http_code}')" = 401
+          mcp -H "Authorization: Bearer $token" | tee out.txt
+          grep -q '"serverInfo"' out.txt
+          docker rm -f http

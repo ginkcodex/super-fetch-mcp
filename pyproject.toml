@@ -1,0 +1,41 @@
+[project]
+name = "super-fetch"
+version = "0.1.0"
+description = "MCP server that fetches web pages the way a normal browser user sees them"
+readme = "README.md"
+authors = [
+    { name = "Hai Tran", email = "hai.tran@plugilo.com" }
+]
+requires-python = ">=3.13"
+dependencies = [
+    "camoufox>=0.5.8",
+    "curl-cffi>=0.17.0",
+    "markdownify>=1.2.3",
+    "mcp>=2.3.0",
+    "platformdirs>=4.14.0",
+    "pypdf>=6.21.4",
+    "trafilatura>=2.3.1",
+]
+
+[project.scripts]
+super-fetch = "super_fetch:main"
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+
+[tool.ruff.lint.isort]
+known-local-folder = ["conftest"]
+
+[dependency-groups]
+dev = [
+    "anyio>=4.15.1",
+    "pytest>=9.2.0",
+    "ruff>=0.17.3",
+]
