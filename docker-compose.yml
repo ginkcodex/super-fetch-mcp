@@ -1,12 +1,11 @@
-# super-fetch as a shared MCP server on your own domain, over HTTPS (see "Run it on a server" in
-# README.md). Point the domain's DNS at this machine, open ports 80 and 443, then:
+# super-fetch as a shared MCP server at http://<server>:8000/mcp (see "Run it on a server" in
+# README.md). On the server:
 #
-#   echo "SUPER_FETCH_DOMAIN=fetch.example.com" > .env
+#   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com" > .env   # the domain or IP agents connect to
 #   echo "SUPER_FETCH_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
 #   docker compose up -d --build
 #
-# Caddy gets a Let's Encrypt certificate for the domain and forwards https://<domain>/mcp to
-# super-fetch, which only answers requests carrying the token.
+# Plain HTTP: the token travels unencrypted, so anyone on the network path can read and reuse it.
 
 services:
   super-fetch:
@@ -16,28 +15,15 @@ services:
     environment:
       SUPER_FETCH_HTTP_HOST: 0.0.0.0
       SUPER_FETCH_HTTP_TOKEN: ${SUPER_FETCH_HTTP_TOKEN:?set SUPER_FETCH_HTTP_TOKEN in .env}
-      SUPER_FETCH_HTTP_ALLOWED_HOSTS: ${SUPER_FETCH_DOMAIN:?set SUPER_FETCH_DOMAIN in .env}
+      SUPER_FETCH_HTTP_ALLOWED_HOSTS: ${SUPER_FETCH_HTTP_ALLOWED_HOSTS:?set SUPER_FETCH_HTTP_ALLOWED_HOSTS in .env}
       # Server IPs are distrusted by bot protection; a residential proxy helps (see README "Limits").
       SUPER_FETCH_PROXY: ${SUPER_FETCH_PROXY:-}
+    ports:
+      - "${SUPER_FETCH_HTTP_PORT:-8000}:8000"
     shm_size: 1g
     volumes:
       - super-fetch-data:/data
-    # Not published: only Caddy reaches it, over the compose network.
-    expose: ["8000"]
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2
-    command: caddy reverse-proxy --from ${SUPER_FETCH_DOMAIN} --to super-fetch:8000
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - caddy-data:/data
-    depends_on: [super-fetch]
     restart: unless-stopped
 
 volumes:
   super-fetch-data:
-  caddy-data:

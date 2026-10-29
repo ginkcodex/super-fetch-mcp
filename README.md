@@ -183,36 +183,38 @@ changes only apply after `make docker-build`.
 of stdio, so one long-running server can be shared by agents on every machine you use. A process
 serves one or the other; stdio stays the default.
 
-### On your own domain, with Docker Compose
+### With Docker Compose
 
-`docker-compose.yml` runs super-fetch next to [Caddy](https://caddyserver.com), which gets a
-Let's Encrypt certificate for your domain and forwards `https://<domain>/mcp` to it.
+`docker-compose.yml` runs the super-fetch container and publishes it on port 8000, so agents
+connect to `http://<server>:8000/mcp`.
 
-1. Point the domain's DNS at the server and open ports 80 and 443.
+1. Open port 8000 on the server's firewall.
 2. On the server:
 
    ```bash
    git clone https://github.com/ginkcodex/super-fetch-mcp.git && cd super-fetch-mcp
-   echo "SUPER_FETCH_DOMAIN=fetch.example.com" > .env
+   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com" > .env   # the domain or IP agents connect to
    echo "SUPER_FETCH_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
    docker compose up -d --build
-   docker compose logs -f   # the first start shows the certificate being issued
+   docker compose logs -f
    ```
+
+   `SUPER_FETCH_HTTP_PORT=...` in `.env` publishes it on another port.
 
 3. On each machine with agents, with the token from `.env`:
 
    ```bash
    export SUPER_FETCH_HTTP_TOKEN=...
-   make register-all URL=https://fetch.example.com/mcp
+   make register-all URL=http://fetch.example.com:8000/mcp
    ```
 
    or by hand:
 
    ```bash
-   claude mcp add --scope user --transport http super-fetch https://fetch.example.com/mcp \
+   claude mcp add --scope user --transport http super-fetch http://fetch.example.com:8000/mcp \
      --header "Authorization: Bearer $SUPER_FETCH_HTTP_TOKEN"
-   codex mcp add super-fetch --url https://fetch.example.com/mcp --bearer-token-env-var SUPER_FETCH_HTTP_TOKEN
-   opencode mcp add --global super-fetch --url https://fetch.example.com/mcp \
+   codex mcp add super-fetch --url http://fetch.example.com:8000/mcp --bearer-token-env-var SUPER_FETCH_HTTP_TOKEN
+   opencode mcp add --global super-fetch --url http://fetch.example.com:8000/mcp \
      --header "Authorization=Bearer $SUPER_FETCH_HTTP_TOKEN"
    ```
 
@@ -232,23 +234,28 @@ bigger server.
 - Every request needs `Authorization: Bearer <token>`, or gets a 401. The token lets anyone use the
   server, i.e. fetch pages from its IP with its browser identity and cookies: treat it as a
   password. To change it, edit `.env`, run `docker compose up -d`, and register again.
+- **The connection is plain HTTP**: the token and every fetched page travel unencrypted, so anyone
+  on the network path (public Wi-Fi, the hosting provider, ...) can read the token and reuse it.
+  Fine on a private network or a VPN (WireGuard, Tailscale); over the internet, put an HTTPS
+  reverse proxy in front (see [Without Docker](#without-docker)) or limit port 8000 to your own IPs
+  in the firewall.
 - `serve --http` refuses to listen on anything but a loopback address without a token, and refuses
   tokens shorter than 32 characters.
-- Requests must be addressed to localhost or a name in `SUPER_FETCH_HTTP_ALLOWED_HOSTS` (the compose
-  file sets it to your domain), so a web page can't reach the server by pointing a domain of its own
-  at it (DNS rebinding). A `421 Invalid Host header` means the name you connect with isn't listed.
-- Only Caddy's ports are published; super-fetch's port stays on the compose network, and the token
-  only ever travels over HTTPS.
+- Requests must be addressed to localhost or a name in `SUPER_FETCH_HTTP_ALLOWED_HOSTS`, so a web
+  page can't reach the server by pointing a domain of its own at it (DNS rebinding). A
+  `421 Invalid Host header` means the name you connect with isn't listed.
 - Private addresses stay blocked (`SUPER_FETCH_ALLOW_PRIVATE=0`), so the server can't be used to
-  reach its own network or the other containers.
+  reach its own network or other containers.
 
 ### Without Docker
 
-Run it on 127.0.0.1 behind your own HTTPS reverse proxy, which must pass the `Host` header through:
-
 ```bash
-SUPER_FETCH_HTTP_TOKEN=... SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com super-fetch serve --http
+SUPER_FETCH_HTTP_HOST=0.0.0.0 SUPER_FETCH_HTTP_TOKEN=... SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com \
+  super-fetch serve --http
 ```
+
+Behind a reverse proxy (e.g. for HTTPS), leave `SUPER_FETCH_HTTP_HOST` at 127.0.0.1 and make the
+proxy pass the `Host` header through.
 
 On your own machine, `make serve-http` (or `super-fetch serve --http`) listens on
 `http://127.0.0.1:8000/mcp` without a token, e.g. to share one server between local agents:
@@ -256,36 +263,24 @@ On your own machine, `make serve-http` (or `super-fetch serve --http`) listens o
 
 ### Troubleshooting
 
+- **Connection refused or timing out**: port 8000 isn't open in the server's firewall (or the
+  provider's), or the container isn't running (`docker compose ps`).
 - **401**: the agent sent no token or the wrong one. Codex only sees `SUPER_FETCH_HTTP_TOKEN` if it
   was exported in the shell Codex was started from.
-- **421 Invalid Host header**: the domain in the URL isn't in `SUPER_FETCH_HTTP_ALLOWED_HOSTS` (in
-  Compose: check `SUPER_FETCH_DOMAIN` in `.env`), or your own reverse proxy rewrites `Host`.
+- **421 Invalid Host header**: the domain or IP in the URL isn't in
+  `SUPER_FETCH_HTTP_ALLOWED_HOSTS`, or a reverse proxy rewrites `Host`.
 - **403 Invalid Origin header**: the request came with a browser `Origin` from another site. Agents
   don't send one.
-- **No certificate**: `docker compose logs caddy`. Let's Encrypt needs the domain's DNS to point
-  at the server and ports 80 and 443 reachable from the internet.
 - **Server won't start**: `docker compose logs super-fetch` says which setting is missing or too
   short.
 
 ### Status
 
 Tested: the token and host checks (`tests/test_http_serve.py`), an MCP client fetching through
-the server, and the Docker image behind Caddy over HTTPS. That last one used a made-up domain
-and Caddy's own certificates instead of Let's Encrypt:
-
-```bash
-docker network create sf-net
-docker run -d --rm --name sf --network sf-net --shm-size 1g -e SUPER_FETCH_HTTP_HOST=0.0.0.0 \
-  -e SUPER_FETCH_HTTP_TOKEN="$(openssl rand -hex 32)" -e SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.test \
-  super-fetch serve --http
-docker run -d --rm --name sf-caddy --network sf-net -p 127.0.0.1:18443:8443 caddy:2 \
-  caddy reverse-proxy --from https://fetch.test:8443 --to sf:8000 --internal-certs
-curl -sk --resolve fetch.test:18443:127.0.0.1 https://fetch.test:18443/mcp ...   # 401 without the token
-```
-
-Not tested yet: a real Let's Encrypt certificate on a public domain, and Claude Code, Codex and
-OpenCode themselves connecting over HTTP (only the MCP SDK's client and curl have). Their
-registration commands were checked against what each CLI writes to its config.
+the server, and `docker compose up` with the checks above (401 without the token, 421 for an
+unlisted host name). Not tested yet: Claude Code, Codex and OpenCode themselves connecting over
+HTTP (only the MCP SDK's client and curl have). Their registration commands were checked against
+what each CLI writes to its config.
 
 ## Command line
 
@@ -322,7 +317,7 @@ Environment variables:
 | `SUPER_FETCH_HTTP_HOST` | `127.0.0.1` | Address `serve --http` listens on |
 | `SUPER_FETCH_HTTP_PORT` | `8000` | Port `serve --http` listens on |
 | `SUPER_FETCH_HTTP_TOKEN` | none | Bearer token `serve --http` requires (at least 32 characters); needed unless listening on loopback |
-| `SUPER_FETCH_HTTP_ALLOWED_HOSTS` | none | Comma-separated host names, besides localhost, that requests may be addressed to (your domain) |
+| `SUPER_FETCH_HTTP_ALLOWED_HOSTS` | none | Comma-separated host names, besides localhost, that requests may be addressed to (the domain or IP agents connect to) |
 
 The data directory holds `identity.json` (the browser fingerprint) and `cookies.json` (cookies from
 every site the browser visited, readable only by you). Treat it like a browser profile: don't

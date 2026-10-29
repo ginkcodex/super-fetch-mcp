@@ -10,7 +10,7 @@
 #
 # Or a server running `serve --http` elsewhere (docker-compose.yml), with its token in the environment:
 #   export SUPER_FETCH_HTTP_TOKEN=...
-#   make register-all URL=https://fetch.example.com/mcp
+#   make register-all URL=http://fetch.example.com:8000/mcp
 
 NAME ?= super-fetch
 SERVER ?= local
@@ -54,7 +54,7 @@ endif
 help: ## Show this help
 	@grep -hE '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 	@echo
-	@echo "  Register with SERVER=local (default), installed or docker, or URL=https://.../mcp for a"
+	@echo "  Register with SERVER=local (default), installed or docker, or URL=http://...:8000/mcp for a"
 	@echo "  remote server (token in SUPER_FETCH_HTTP_TOKEN). Now: $(REGISTERS)"
 
 # --- Development -----------------------------------------------------------------------------
