@@ -29,7 +29,7 @@ PDFs are returned as text with `[Page n]` markers (up to 500 pages), whichever t
 At most two fetches run against the same host at once (bursts are what get clients flagged); more
 wait their turn, and parallel calls for the same page share one download.
 
-## Tool
+## Tools
 
 `fetch(url, format="markdown", start_index=0, max_length=20000, render="auto", wait_for=None)`
 
@@ -45,7 +45,7 @@ wait their turn, and parallel calls for the same page share one download.
 Requires [uv](https://docs.astral.sh/uv/).
 
 ```bash
-uv tool install git+https://github.com/<you>/super-fetch   # or: uv tool install /path/to/checkout
+uv tool install git+https://github.com/ginkcodex/super-fetch-mcp   # or: uv tool install /path/to/checkout
 
 # Download the browser (~100 MB, once per machine) and check everything works
 super-fetch install
@@ -122,6 +122,7 @@ Agents also have their own built-in web fetch. To have them use this one, add a 
 The image includes the browser, Xvfb and fonts, so the machine needs nothing but Docker:
 
 ```bash
+git clone https://github.com/ginkcodex/super-fetch-mcp.git && cd super-fetch-mcp
 make docker-build      # or: docker build -t super-fetch .
 make docker-doctor     # check both fetch tiers inside the image
 ```
@@ -188,9 +189,10 @@ serves one or the other; stdio stays the default.
 Let's Encrypt certificate for your domain and forwards `https://<domain>/mcp` to it.
 
 1. Point the domain's DNS at the server and open ports 80 and 443.
-2. On the server, in a checkout:
+2. On the server:
 
    ```bash
+   git clone https://github.com/ginkcodex/super-fetch-mcp.git && cd super-fetch-mcp
    echo "SUPER_FETCH_DOMAIN=fetch.example.com" > .env
    echo "SUPER_FETCH_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
    docker compose up -d --build
@@ -342,6 +344,10 @@ the browser's final URL.
   back with a "Blocked by …" warning.
 
 ## Development
+
+```bash
+git clone https://github.com/ginkcodex/super-fetch-mcp.git && cd super-fetch-mcp
+```
 
 `make setup`, `make test`, `make lint`, `make bench` and `make docker-build` wrap the commands below.
 

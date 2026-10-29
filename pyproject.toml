@@ -17,6 +17,9 @@ dependencies = [
     "trafilatura>=2.3.1",
 ]
 
+[project.urls]
+Repository = "https://github.com/ginkcodex/super-fetch-mcp"
+
 [project.scripts]
 super-fetch = "super_fetch:main"
 
