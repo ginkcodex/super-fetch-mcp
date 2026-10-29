@@ -1,11 +1,12 @@
-# super-fetch as a shared MCP server at http://<server>:8000/mcp (see "Run it on a server" in
-# README.md). On the server:
+# super-fetch as a shared MCP server over plain HTTP on port 8000, for Cloudflare (or another proxy)
+# to put HTTPS in front of. See "Run it on a server" in README.md. On the server:
 #
-#   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com" > .env   # the domain or IP agents connect to
+#   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.ginklab.cv" > .env   # the public domain agents connect to
 #   echo "SUPER_FETCH_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
 #   docker compose up -d --build
 #
-# Plain HTTP: the token travels unencrypted, so anyone on the network path can read and reuse it.
+# With a Cloudflare Tunnel (cloudflared on this machine), add SUPER_FETCH_HTTP_BIND=127.0.0.1 so the
+# port isn't reachable from outside. Docker-published ports bypass ufw.
 
 services:
   super-fetch:
@@ -19,7 +20,7 @@ services:
       # Server IPs are distrusted by bot protection; a residential proxy helps (see README "Limits").
       SUPER_FETCH_PROXY: ${SUPER_FETCH_PROXY:-}
     ports:
-      - "${SUPER_FETCH_HTTP_PORT:-8000}:8000"
+      - "${SUPER_FETCH_HTTP_BIND:-0.0.0.0}:${SUPER_FETCH_HTTP_PORT:-8000}:8000"
     shm_size: 1g
     volumes:
       - super-fetch-data:/data

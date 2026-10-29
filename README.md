@@ -183,38 +183,53 @@ changes only apply after `make docker-build`.
 of stdio, so one long-running server can be shared by agents on every machine you use. A process
 serves one or the other; stdio stays the default.
 
-### With Docker Compose
+### With Docker Compose, behind Cloudflare
 
-`docker-compose.yml` runs the super-fetch container and publishes it on port 8000, so agents
-connect to `http://<server>:8000/mcp`.
+`docker-compose.yml` runs the super-fetch container on plain HTTP, port 8000. Cloudflare provides
+HTTPS on the public domain, so agents connect to `https://fetch.ginklab.cv/mcp`.
 
-1. Open port 8000 on the server's firewall.
-2. On the server:
+1. On the server:
 
    ```bash
    git clone https://github.com/ginkcodex/super-fetch-mcp.git && cd super-fetch-mcp
-   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com" > .env   # the domain or IP agents connect to
+   echo "SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.ginklab.cv" > .env   # the public domain
    echo "SUPER_FETCH_HTTP_TOKEN=$(openssl rand -hex 32)" >> .env
    docker compose up -d --build
    docker compose logs -f
    ```
 
-   `SUPER_FETCH_HTTP_PORT=...` in `.env` publishes it on another port.
+   Check it locally: `curl -i -X POST http://127.0.0.1:8000/mcp` should answer `401`.
+
+2. Connect Cloudflare to port 8000, one of two ways:
+
+   - **Cloudflare Tunnel** (no inbound port open): run `cloudflared` on the server and add a public
+     hostname `fetch.ginklab.cv` with service `http://localhost:8000`. Add
+     `SUPER_FETCH_HTTP_BIND=127.0.0.1` to `.env` and `docker compose up -d`, so port 8000 is only
+     reachable from the server itself.
+   - **Proxied DNS record**: an `A` record `fetch` → the server's IP, proxied (orange cloud).
+     Cloudflare only connects to the origin on ports 80/443 by itself, so add an **Origin Rule**
+     for the hostname that sets the destination port to 8000, and a **Configuration Rule** setting
+     SSL to *Flexible* (the origin speaks HTTP). Then allow port 8000 only from
+     [Cloudflare's IP ranges](https://www.cloudflare.com/ips/) in your provider's firewall.
+     `ufw` doesn't work for this: Docker-published ports bypass it.
+
+   Either way Cloudflare passes `Host: fetch.ginklab.cv` through, which is what
+   `SUPER_FETCH_HTTP_ALLOWED_HOSTS` accepts.
 
 3. On each machine with agents, with the token from `.env`:
 
    ```bash
    export SUPER_FETCH_HTTP_TOKEN=...
-   make register-all URL=http://fetch.example.com:8000/mcp
+   make register-all URL=https://fetch.ginklab.cv/mcp
    ```
 
    or by hand:
 
    ```bash
-   claude mcp add --scope user --transport http super-fetch http://fetch.example.com:8000/mcp \
+   claude mcp add --scope user --transport http super-fetch https://fetch.ginklab.cv/mcp \
      --header "Authorization: Bearer $SUPER_FETCH_HTTP_TOKEN"
-   codex mcp add super-fetch --url http://fetch.example.com:8000/mcp --bearer-token-env-var SUPER_FETCH_HTTP_TOKEN
-   opencode mcp add --global super-fetch --url http://fetch.example.com:8000/mcp \
+   codex mcp add super-fetch --url https://fetch.ginklab.cv/mcp --bearer-token-env-var SUPER_FETCH_HTTP_TOKEN
+   opencode mcp add --global super-fetch --url https://fetch.ginklab.cv/mcp \
      --header "Authorization=Bearer $SUPER_FETCH_HTTP_TOKEN"
    ```
 
@@ -234,11 +249,10 @@ bigger server.
 - Every request needs `Authorization: Bearer <token>`, or gets a 401. The token lets anyone use the
   server, i.e. fetch pages from its IP with its browser identity and cookies: treat it as a
   password. To change it, edit `.env`, run `docker compose up -d`, and register again.
-- **The connection is plain HTTP**: the token and every fetched page travel unencrypted, so anyone
-  on the network path (public Wi-Fi, the hosting provider, ...) can read the token and reuse it.
-  Fine on a private network or a VPN (WireGuard, Tailscale); over the internet, put an HTTPS
-  reverse proxy in front (see [Without Docker](#without-docker)) or limit port 8000 to your own IPs
-  in the firewall.
+- Agents reach Cloudflare over HTTPS. With a proxied DNS record, the hop from Cloudflare to the
+  server is plain HTTP, token included; a Tunnel encrypts that hop too.
+- Don't leave port 8000 open to everyone: anyone could then skip Cloudflare and try tokens directly
+  against the server. Bind it to 127.0.0.1 (Tunnel) or allow only Cloudflare's IPs (proxied record).
 - `serve --http` refuses to listen on anything but a loopback address without a token, and refuses
   tokens shorter than 32 characters.
 - Requests must be addressed to localhost or a name in `SUPER_FETCH_HTTP_ALLOWED_HOSTS`, so a web
@@ -250,7 +264,7 @@ bigger server.
 ### Without Docker
 
 ```bash
-SUPER_FETCH_HTTP_HOST=0.0.0.0 SUPER_FETCH_HTTP_TOKEN=... SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.example.com \
+SUPER_FETCH_HTTP_HOST=0.0.0.0 SUPER_FETCH_HTTP_TOKEN=... SUPER_FETCH_HTTP_ALLOWED_HOSTS=fetch.ginklab.cv \
   super-fetch serve --http
 ```
 
@@ -263,14 +277,18 @@ On your own machine, `make serve-http` (or `super-fetch serve --http`) listens o
 
 ### Troubleshooting
 
-- **Connection refused or timing out**: port 8000 isn't open in the server's firewall (or the
-  provider's), or the container isn't running (`docker compose ps`).
 - **401**: the agent sent no token or the wrong one. Codex only sees `SUPER_FETCH_HTTP_TOKEN` if it
   was exported in the shell Codex was started from.
-- **421 Invalid Host header**: the domain or IP in the URL isn't in
-  `SUPER_FETCH_HTTP_ALLOWED_HOSTS`, or a reverse proxy rewrites `Host`.
-- **403 Invalid Origin header**: the request came with a browser `Origin` from another site. Agents
-  don't send one.
+- **421 Invalid Host header**: the domain in the URL isn't in `SUPER_FETCH_HTTP_ALLOWED_HOSTS`, or
+  the proxy rewrites `Host` (in a Tunnel, leave "HTTP Host Header" unset).
+- **403 with a Cloudflare page, or a challenge**: Cloudflare's bot protection (Bot Fight Mode, WAF
+  rules, "I'm Under Attack") is stopping the agent, which isn't a browser. Turn it off for this
+  hostname, or skip it for `/mcp` if your plan allows.
+- **403 Invalid Origin header** (plain text, from super-fetch): the request came with a browser
+  `Origin` from another site. Agents don't send one.
+- **521 / 522 / 523 from Cloudflare**: it can't reach port 8000: the Origin Rule is missing, the
+  firewall doesn't allow Cloudflare's IPs, the Tunnel is down, or the container isn't running
+  (`docker compose ps`).
 - **Server won't start**: `docker compose logs super-fetch` says which setting is missing or too
   short.
 
@@ -278,9 +296,10 @@ On your own machine, `make serve-http` (or `super-fetch serve --http`) listens o
 
 Tested: the token and host checks (`tests/test_http_serve.py`), an MCP client fetching through
 the server, and `docker compose up` with the checks above (401 without the token, 421 for an
-unlisted host name). Not tested yet: Claude Code, Codex and OpenCode themselves connecting over
-HTTP (only the MCP SDK's client and curl have). Their registration commands were checked against
-what each CLI writes to its config.
+unlisted host name), plus an HTTPS reverse proxy in front passing `Host` through. Not tested yet:
+the Cloudflare setup itself, and Claude Code, Codex and OpenCode connecting over HTTP (only the MCP
+SDK's client and curl have). Their registration commands were checked against what each CLI
+writes to its config.
 
 ## Command line
 
