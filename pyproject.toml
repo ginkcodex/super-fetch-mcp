@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "MCP server that fetches web pages the way a normal browser user sees them"
 readme = "README.md"
 authors = [
-    { name = "Hai Tran", email = "hai.tran@plugilo.com" }
+    { name = "Gink", email = "ginkcode@gmail.com" }
 ]
 requires-python = ">=3.13"
 dependencies = [
