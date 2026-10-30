@@ -58,6 +58,8 @@ class Settings:
     """Operating system the browser's fingerprint claims (the browser itself always runs on this machine)."""
     data_dir: Path | None = None
     """Where the browser identity and cookies are kept between runs; None keeps them in memory only."""
+    safe_browsing_key: str | None = field(default=None, repr=False)
+    """Google API key; when set, URLs are checked against Google Safe Browsing before being fetched."""
     http_host: str = "127.0.0.1"
     """Address `serve --http` listens on."""
     http_port: int = 8000
@@ -84,6 +86,7 @@ class Settings:
             browser_concurrency=int(env("SUPER_FETCH_BROWSER_CONCURRENCY", cls.browser_concurrency)),
             browser_idle_timeout=float(env("SUPER_FETCH_BROWSER_IDLE_TIMEOUT", cls.browser_idle_timeout)),
             browser_os=_env_choice("SUPER_FETCH_BROWSER_OS", get_args(BrowserOS), cls.browser_os),
+            safe_browsing_key=env("SUPER_FETCH_SAFE_BROWSING_KEY") or None,
             http_host=env("SUPER_FETCH_HTTP_HOST", cls.http_host),
             http_port=int(env("SUPER_FETCH_HTTP_PORT", cls.http_port)),
             http_token=env("SUPER_FETCH_HTTP_TOKEN") or None,

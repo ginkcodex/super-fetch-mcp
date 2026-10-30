@@ -237,8 +237,9 @@ HTTPS on the public domain, so agents connect to `https://fetch.ginklab.cv/mcp`.
    each time it starts, so export it in your shell profile.
 
 Put other settings in `.env` and pass them through under `environment:` in `docker-compose.yml`
-(`SUPER_FETCH_PROXY` already is: server IPs are what bot protection distrusts most, see
-[Limits](#limits)). After pulling changes, `docker compose up -d --build` rebuilds and restarts.
+(`SUPER_FETCH_PROXY` and `SUPER_FETCH_SAFE_BROWSING_KEY` already are; server IPs are what bot
+protection distrusts most, see [Limits](#limits), and a shared server is a good place to
+[block dangerous sites](#block-dangerous-sites-google-safe-browsing)). After pulling changes, `docker compose up -d --build` rebuilds and restarts.
 
 All agents share one browser, cookie jar and identity, so a challenge passed for one agent is
 passed for all. Up to `SUPER_FETCH_BROWSER_CONCURRENCY` (3) pages render at once; raise it on a
@@ -309,7 +310,8 @@ super-fetch serve --http       # run it over HTTP instead (--host, --port; see "
 super-fetch fetch <url>        # print what the tool would return, for testing
                                #   (--render, --wait-for, --format, --start-index, --max-length)
 super-fetch install            # download the browser
-super-fetch doctor             # check both tiers; show the network fingerprint servers see
+super-fetch doctor             # check both tiers (and the Safe Browsing key, if set); show the
+                               #   network fingerprint servers see
 super-fetch reset              # forget the saved browser identity and cookies, start fresh
 ```
 
@@ -332,6 +334,7 @@ Environment variables:
 | `SUPER_FETCH_BROWSER_IDLE_TIMEOUT` | `300` | Seconds before an unused browser is shut down |
 | `SUPER_FETCH_BROWSER_OS` | `any` | OS the browser fingerprint claims: `any`, `windows`, `macos`, `linux`; changing it starts a new identity |
 | `SUPER_FETCH_DATA_DIR` | `~/.local/share/super-fetch` (Linux) | Saved browser identity and cookies; empty = keep nothing on disk |
+| `SUPER_FETCH_SAFE_BROWSING_KEY` | none | Google API key: refuse pages Google Safe Browsing lists as dangerous (see [below](#block-dangerous-sites-google-safe-browsing)) |
 | `SUPER_FETCH_LOG_LEVEL` | `WARNING` | `DEBUG` traces the browser's wait loop (on stderr) |
 | `SUPER_FETCH_HTTP_HOST` | `127.0.0.1` | Address `serve --http` listens on |
 | `SUPER_FETCH_HTTP_PORT` | `8000` | Port `serve --http` listens on |
@@ -345,6 +348,37 @@ share it. Running several servers at once (one per agent session) is fine; they 
 Private addresses are blocked by default so a prompt-injected agent can't use the server to reach
 internal services: checked on every HTTP redirect hop, on every request the browser makes, and on
 the browser's final URL.
+
+## Block dangerous sites (Google Safe Browsing)
+
+With `SUPER_FETCH_SAFE_BROWSING_KEY` set, URLs are looked up in
+[Google Safe Browsing](https://developers.google.com/safe-browsing) before they are fetched: the URL
+asked for, every HTTP redirect hop, and the page the browser ends up on. Pages listed as phishing,
+malware, unwanted software or harmful apps aren't fetched; the agent gets an error saying why,
+e.g. "Not fetching …: Google Safe Browsing reports that this page is a suspected phishing or
+deceptive site."
+
+To get a key:
+
+1. In the [Google Cloud console](https://console.cloud.google.com/), create (or pick) a project and
+   enable the [Safe Browsing API](https://console.cloud.google.com/apis/library/safebrowsing.googleapis.com).
+2. Under *APIs & Services → Credentials*, create an API key and restrict it to the Safe Browsing API.
+3. Set `SUPER_FETCH_SAFE_BROWSING_KEY` (in `.env` for Docker Compose) and run `super-fetch doctor`:
+   it checks the key against Google's test page, which is always listed as malware.
+
+Good to know:
+
+- The Safe Browsing API is free, but for non-commercial use only. Commercial use needs Google's
+  paid [Web Risk API](https://cloud.google.com/web-risk), which super-fetch doesn't support.
+- Each URL is sent to Google in full (the Lookup API). Answers are cached: 5 minutes for clean
+  URLs, as long as Google says for listed ones.
+- If the lookup fails (wrong key, quota used up, Google unreachable), the page is refused rather than
+  fetched unchecked. The error says why.
+- Only page addresses are checked, not the images, scripts and frames a page loads. In the browser,
+  redirects are checked where they end up, after the page has loaded; nothing from a listed page is
+  returned.
+- The lists aren't perfect: a new phishing page may not be listed yet, and a safe page is
+  occasionally flagged.
 
 ## Limits
 

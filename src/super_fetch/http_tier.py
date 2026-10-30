@@ -14,7 +14,7 @@ from curl_cffi.requests import AsyncSession, BrowserType
 
 from .config import Settings
 from .identity import Identity
-from .urlcheck import check_url
+from .urlcheck import SafeBrowsing, check_url
 
 _REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 _META_CHARSET = re.compile(rb"""<meta[^>]+charset=["']?([\w-]+)""", re.IGNORECASE)
@@ -63,9 +63,10 @@ class RawResponse:
 
 
 class HttpFetcher:
-    def __init__(self, settings: Settings, identity: Identity | None = None):
+    def __init__(self, settings: Settings, identity: Identity | None = None, safe_browsing: SafeBrowsing | None = None):
         self._settings = settings
         self._identity = identity
+        self._safe_browsing = safe_browsing
         self._session: AsyncSession | None = None
         self._identity_session: AsyncSession | None = None
 
@@ -107,7 +108,7 @@ class HttpFetcher:
         """Follow redirects manually so every hop passes the URL check."""
         s = self._settings
         for _ in range(s.max_redirects + 1):
-            await check_url(url, allow_private=s.allow_private)
+            await check_url(url, allow_private=s.allow_private, safe_browsing=self._safe_browsing)
             session, options = self._get_session(url)
             try:
                 resp = await session.request("GET", url, stream=True, allow_redirects=False, timeout=timeout, **options)

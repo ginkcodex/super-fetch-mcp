@@ -17,6 +17,7 @@ from .detect import detect_challenge, detect_hard_block, is_spa_shell
 from .extract import DocumentError, Format, html_to_content, pdf_to_content
 from .http_tier import FetchError, HttpFetcher, RawResponse
 from .identity import Identity
+from .urlcheck import SafeBrowsing
 
 Render = Literal["auto", "never", "always"]
 
@@ -62,8 +63,10 @@ class Pipeline:
     def __init__(self, settings: Settings):
         self._settings = settings
         self.identity = Identity(settings.data_dir)
-        self._http = HttpFetcher(settings, self.identity)
-        self._browser = BrowserFetcher(settings, self.identity)
+        key = settings.safe_browsing_key
+        self._safe_browsing = SafeBrowsing(key) if key else None
+        self._http = HttpFetcher(settings, self.identity, self._safe_browsing)
+        self._browser = BrowserFetcher(settings, self.identity, self._safe_browsing)
         self._cache: OrderedDict[tuple, tuple[float, FetchResult]] = OrderedDict()
         self._browser_hosts: dict[str, float] = {}
         """Hosts the HTTP tier recently failed on, mapped to when to give it another try."""
@@ -72,6 +75,8 @@ class Pipeline:
     async def close(self) -> None:
         await self._http.close()
         await self._browser.close()
+        if self._safe_browsing is not None:
+            await self._safe_browsing.close()
 
     async def fetch(
         self, url: str, fmt: Format = "markdown", render: Render = "auto", wait_for: str | None = None

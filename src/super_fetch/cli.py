@@ -20,6 +20,8 @@ from .extract import Format
 
 FINGERPRINT_URL = "https://tls.peet.ws/api/all"
 BROWSER_CHECK_URL = "https://example.com/"
+SAFE_BROWSING_TEST_URL = "https://testsafebrowsing.appspot.com/s/malware.html"
+"""Google's page for testing Safe Browsing clients: always listed as malware."""
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -93,6 +95,7 @@ async def _doctor(settings: Settings) -> int:
     from .browser_tier import BrowserFetcher, browser_installed
     from .http_tier import HttpFetcher
     from .identity import CLEARANCE_COOKIES, Identity
+    from .urlcheck import BlockedURLError, SafeBrowsing, UnsafeURLError
 
     identity = Identity(settings.data_dir)
     print(f"super-fetch {__version__}, Python {sys.version.split()[0]}")
@@ -104,6 +107,23 @@ async def _doctor(settings: Settings) -> int:
     print(f"Saved bot-protection cookies for: {', '.join(cleared) or 'no sites yet'}")
 
     code = 0
+    if settings.safe_browsing_key:
+        safe_browsing = SafeBrowsing(settings.safe_browsing_key)
+        try:
+            await safe_browsing.check(SAFE_BROWSING_TEST_URL)
+        except UnsafeURLError:
+            print("[ OK ] Safe Browsing check: on (Google's test page is flagged as expected).")
+        except BlockedURLError as exc:
+            print(f"[FAIL] Safe Browsing check: {exc}")
+            code = 1
+        else:
+            print(f"[FAIL] Safe Browsing check: Google's test page {SAFE_BROWSING_TEST_URL} was not flagged.")
+            code = 1
+        finally:
+            await safe_browsing.close()
+    else:
+        print("Safe Browsing check: off (set SUPER_FETCH_SAFE_BROWSING_KEY to turn it on)")
+
     http = HttpFetcher(settings)
     try:
         raw = await http.fetch(FINGERPRINT_URL)

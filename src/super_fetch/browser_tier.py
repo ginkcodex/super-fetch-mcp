@@ -17,7 +17,7 @@ from .config import Settings
 from .detect import detect_challenge, detect_hard_block
 from .http_tier import FetchError, RawResponse
 from .identity import Identity
-from .urlcheck import BlockedURLError, check_url
+from .urlcheck import BlockedURLError, SafeBrowsing, check_url
 
 log = logging.getLogger(__name__)
 
@@ -101,9 +101,10 @@ def _playwright_proxy(proxy_url: str | None) -> dict[str, str] | None:
 class BrowserFetcher:
     """One lazily started browser shared by all fetches, closed again after a period of no use."""
 
-    def __init__(self, settings: Settings, identity: Identity | None = None):
+    def __init__(self, settings: Settings, identity: Identity | None = None, safe_browsing: SafeBrowsing | None = None):
         self._settings = settings
         self.identity = identity or Identity(None)
+        self._safe_browsing = safe_browsing
         self.mode = resolve_mode(settings)
         self._lock = asyncio.Lock()
         self._slots = asyncio.Semaphore(settings.browser_concurrency)
@@ -121,7 +122,7 @@ class BrowserFetcher:
 
     async def fetch(self, url: str, wait_for: str | None = None, timeout: float | None = None) -> RawResponse:
         timeout = timeout or self._settings.timeout
-        await check_url(url, allow_private=self._settings.allow_private)
+        await check_url(url, allow_private=self._settings.allow_private, safe_browsing=self._safe_browsing)
         async with self._slots:
             self._active += 1
             try:
@@ -251,7 +252,8 @@ class BrowserFetcher:
                 return await _raw_from_response(page.url, first, self._settings.max_bytes)
 
         warnings, hard_block = await self._wait_until_ready(page, document, network, wait_for, deadline)
-        await check_url(page.url, allow_private=self._settings.allow_private)
+        # Also where redirects (and JavaScript) took the page, which `_guard_request` doesn't see.
+        await check_url(page.url, allow_private=self._settings.allow_private, safe_browsing=self._safe_browsing)
 
         html = await _page_html(page)
         last = document[-1] if document else None
