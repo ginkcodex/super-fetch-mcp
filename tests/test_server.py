@@ -86,7 +86,7 @@ async def call_fetch(client, **args) -> tuple[bool, str]:
 
 async def test_tool_is_listed(client):
     tools = (await client.list_tools()).tools
-    assert [t.name for t in tools] == ["fetch"]
+    assert [t.name for t in tools] == ["fetch", "fetch_image"]
 
 
 async def test_fetch_and_paginate(client, base_url):

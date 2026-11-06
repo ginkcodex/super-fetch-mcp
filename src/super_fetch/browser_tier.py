@@ -120,7 +120,9 @@ class BrowserFetcher:
         async with self._lock:
             await self._shutdown()
 
-    async def fetch(self, url: str, wait_for: str | None = None, timeout: float | None = None) -> RawResponse:
+    async def fetch(
+        self, url: str, wait_for: str | None = None, timeout: float | None = None, referer: str | None = None
+    ) -> RawResponse:
         timeout = timeout or self._settings.timeout
         await check_url(url, allow_private=self._settings.allow_private, safe_browsing=self._safe_browsing)
         async with self._slots:
@@ -133,7 +135,7 @@ class BrowserFetcher:
                         # Waiting stops a little early so a stuck challenge or missing selector
                         # still returns the page (and why) instead of a bare timeout.
                         deadline = time.monotonic() + timeout - min(_READ_MARGIN, timeout / 4)
-                        return await self._load(page, url, wait_for, deadline)
+                        return await self._load(page, url, wait_for, deadline, referer)
                 except TimeoutError as exc:
                     raise FetchError(f"Browser timed out after {timeout:g}s loading {url}") from exc
                 finally:
@@ -229,7 +231,9 @@ class BrowserFetcher:
         else:
             await route.abort("blockedbyclient")
 
-    async def _load(self, page: Page, url: str, wait_for: str | None, deadline: float) -> RawResponse:
+    async def _load(
+        self, page: Page, url: str, wait_for: str | None, deadline: float, referer: str | None = None
+    ) -> RawResponse:
         document: list[Response] = []
         network = _NetworkTracker(page)
 
@@ -239,7 +243,7 @@ class BrowserFetcher:
 
         page.on("response", on_response)
         try:
-            await page.goto(url, wait_until="domcontentloaded")
+            await page.goto(url, wait_until="domcontentloaded", referer=referer)
         except PlaywrightError as exc:
             raise FetchError(f"Browser could not load {url}: {exc.message.splitlines()[0]}") from exc
 
@@ -248,15 +252,17 @@ class BrowserFetcher:
             # What the browser really sends, for the HTTP tier to match when reusing its cookies.
             self.identity.record_headers(await first.request.all_headers())
             if not _is_html_response(first):
-                # JSON, plain text, PDF...: return the bytes rather than Firefox's viewer page.
-                return await _raw_from_response(page.url, first, self._settings.max_bytes)
+                # JSON, plain text, PDF, images...: return the bytes rather than Firefox's viewer page.
+                return await self._raw_from_response(first)
 
         warnings, hard_block = await self._wait_until_ready(page, document, network, wait_for, deadline)
         # Also where redirects (and JavaScript) took the page, which `_guard_request` doesn't see.
         await check_url(page.url, allow_private=self._settings.allow_private, safe_browsing=self._safe_browsing)
 
-        html = await _page_html(page)
         last = document[-1] if document else None
+        if last is not None and not _is_html_response(last):
+            return await self._raw_from_response(last)  # e.g. an image a passed challenge reloaded into
+        html = await _page_html(page)
         headers = (await last.all_headers()) if last else {}
         body = html.encode()
         limit = self._settings.max_bytes
@@ -269,6 +275,20 @@ class BrowserFetcher:
             truncated=len(body) > limit,
             warnings=warnings,
             hard_block=hard_block,
+        )
+
+    async def _raw_from_response(self, response: Response) -> RawResponse:
+        url = response.url
+        # Where redirects led, which `_guard_request` doesn't see.
+        await check_url(url, allow_private=self._settings.allow_private, safe_browsing=self._safe_browsing)
+        try:
+            body = await response.body()
+        except PlaywrightError as exc:
+            raise FetchError(f"Browser could not read the response body of {url}: {exc.message}") from exc
+        headers = await response.all_headers()
+        limit = self._settings.max_bytes
+        return RawResponse(
+            url=url, status=response.status, headers=headers, body=body[:limit], truncated=len(body) > limit
         )
 
     async def _wait_until_ready(
@@ -359,15 +379,6 @@ async def _click_turnstile(page: Page) -> bool:
 def _is_html_response(response: Response) -> bool:
     content_type = response.headers.get("content-type", "").split(";")[0].strip().lower()
     return content_type in {"", "text/html", "application/xhtml+xml"}
-
-
-async def _raw_from_response(url: str, response: Response, limit: int) -> RawResponse:
-    try:
-        body = await response.body()
-    except PlaywrightError as exc:
-        raise FetchError(f"Browser could not read the response body of {url}: {exc.message}") from exc
-    headers = await response.all_headers()
-    return RawResponse(url=url, status=response.status, headers=headers, body=body[:limit], truncated=len(body) > limit)
 
 
 async def _page_html(page: Page) -> str:

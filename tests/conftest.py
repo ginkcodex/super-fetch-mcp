@@ -1,3 +1,5 @@
+import io
+
 import pytest
 
 
@@ -41,3 +43,13 @@ def build_pdf(*pages: str) -> bytes:
 @pytest.fixture
 def make_pdf():
     return build_pdf
+
+
+def build_image(fmt: str, size=(40, 30), mode="RGB", frames=1) -> bytes:
+    """An image in Pillow format `fmt`, animated when `frames` > 1."""
+    from PIL import Image
+
+    out = io.BytesIO()
+    images = [Image.new(mode, size, (i * 40 % 256, 100, 150)) for i in range(frames)]
+    images[0].save(out, fmt, save_all=frames > 1, append_images=images[1:])
+    return out.getvalue()

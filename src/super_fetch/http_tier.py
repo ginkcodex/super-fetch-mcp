@@ -7,7 +7,7 @@ import codecs
 import re
 from dataclasses import dataclass, field
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from curl_cffi import CurlError
 from curl_cffi.requests import AsyncSession, BrowserType
@@ -23,6 +23,10 @@ _FIREFOX_TARGET = max(
     key=lambda value: int(value[7:]),
 )
 """Newest Firefox TLS fingerprint curl_cffi has, to match the (Firefox-based) browser tier."""
+_IMAGE_ACCEPT = {
+    "chrome": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "firefox": "image/avif,image/webp,image/png,image/svg+xml,image/*;q=0.8,*/*;q=0.5",
+}
 
 
 class FetchError(Exception):
@@ -95,21 +99,29 @@ class HttpFetcher:
                 await session.close()
         self._session = self._identity_session = None
 
-    async def fetch(self, url: str, timeout: float | None = None) -> RawResponse:
-        """GET `url` within `timeout` seconds in total (default: the configured timeout)."""
+    async def fetch(self, url: str, timeout: float | None = None, image_on: str | None = None) -> RawResponse:
+        """GET `url` within `timeout` seconds in total (default: the configured timeout).
+
+        With `image_on` (the URL of the page showing it), the request looks like the browser
+        loading an image on that page rather than opening a page.
+        """
         timeout = timeout or self._settings.timeout
         try:
             async with asyncio.timeout(timeout):
-                return await self._fetch(url, timeout)
+                return await self._fetch(url, timeout, image_on)
         except TimeoutError as exc:
             raise FetchError(f"Request to {url} timed out after {timeout:g}s") from exc
 
-    async def _fetch(self, url: str, timeout: float) -> RawResponse:
+    async def _fetch(self, url: str, timeout: float, image_on: str | None) -> RawResponse:
         """Follow redirects manually so every hop passes the URL check."""
         s = self._settings
         for _ in range(s.max_redirects + 1):
             await check_url(url, allow_private=s.allow_private, safe_browsing=self._safe_browsing)
             session, options = self._get_session(url)
+            if image_on:
+                firefox = session is self._identity_session or s.impersonate.startswith("firefox")
+                extra = _image_headers(url, image_on, firefox)
+                options = {**options, "headers": {**options.get("headers", {}), **extra}}
             try:
                 resp = await session.request("GET", url, stream=True, allow_redirects=False, timeout=timeout, **options)
             except CurlError as exc:
@@ -139,3 +151,24 @@ class HttpFetcher:
         except CurlError as exc:
             raise FetchError(f"Reading response from {resp.url} failed: {exc}") from exc
         return b"".join(chunks), False
+
+
+def _image_headers(url: str, page_url: str, firefox: bool) -> dict[str, str | None]:
+    """The headers that differ when a browser loads an image on `page_url` instead of opening a page."""
+    image, page = urlsplit(url), urlsplit(page_url)
+    if (image.scheme, image.netloc) == (page.scheme, page.netloc):
+        site = "same-origin"
+    elif (image.hostname or "").split(".")[-2:] == (page.hostname or "").split(".")[-2:]:
+        site = "same-site"  # roughly: same registrable domain
+    else:
+        site = "cross-site"
+    return {
+        "accept": _IMAGE_ACCEPT["firefox" if firefox else "chrome"],
+        "referer": page_url,
+        "sec-fetch-dest": "image",
+        "sec-fetch-mode": "no-cors",
+        "sec-fetch-site": site,
+        # Sent only when opening pages; None removes them.
+        "sec-fetch-user": None,
+        "upgrade-insecure-requests": None,
+    }

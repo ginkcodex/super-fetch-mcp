@@ -1,4 +1,4 @@
-"""Command line entry point: `super-fetch [serve [--http]|fetch|install|doctor|reset]`."""
+"""Command line entry point: `super-fetch [serve [--http]|fetch|image|install|doctor|reset]`."""
 
 from __future__ import annotations
 
@@ -45,6 +45,13 @@ def _parser() -> argparse.ArgumentParser:
     fetch.add_argument("--wait-for", default=None, metavar="CSS_SELECTOR")
     fetch.add_argument("--start-index", type=int, default=0)
     fetch.add_argument("--max-length", type=int, default=None)
+    fetch.add_argument("--no-images", dest="images", action="store_false", help="leave images out of the content")
+
+    image = sub.add_parser("image", help="Fetch one image like the fetch_image tool and describe it")
+    image.add_argument("url")
+    image.add_argument("--referer", default=None, metavar="PAGE_URL", help="the page the image is on")
+    image.add_argument("--render", choices=("auto", "never", "always"), default="auto")
+    image.add_argument("-o", "--output", default=None, metavar="FILE", help="save what the agent would see here")
 
     sub.add_parser("install", help="Download the browser used for bot challenges and JavaScript pages")
     sub.add_parser("doctor", help="Check that fetching works on this machine")
@@ -60,13 +67,35 @@ async def _fetch(args: argparse.Namespace, settings: Settings) -> int:
 
     pipeline = Pipeline(settings)
     try:
-        result = await pipeline.fetch(args.url, args.format, args.render, args.wait_for)
+        result = await pipeline.fetch(args.url, args.format, args.render, args.wait_for, args.images)
     except (BlockedURLError, FetchError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     finally:
         await pipeline.close()
     print(format_result(result, args.start_index, args.max_length or settings.max_length))
+    return 0
+
+
+async def _image(args: argparse.Namespace, settings: Settings) -> int:
+    from .http_tier import FetchError
+    from .pipeline import Pipeline
+    from .server import format_image_header
+    from .urlcheck import BlockedURLError
+
+    pipeline = Pipeline(settings)
+    try:
+        result = await pipeline.fetch_image(args.url, args.referer, args.render)
+    except (BlockedURLError, FetchError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        await pipeline.close()
+    print(format_image_header(result))
+    if args.output:
+        with open(args.output, "wb") as out:
+            out.write(result.image.data if result.image else (result.svg or "").encode())
+        print(f"Saved to {args.output}")
     return 0
 
 
@@ -173,6 +202,8 @@ def main(argv: list[str] | None = None) -> None:
     match args.command:
         case "fetch":
             sys.exit(asyncio.run(_fetch(args, settings)))
+        case "image":
+            sys.exit(asyncio.run(_image(args, settings)))
         case "install":
             sys.exit(_install())
         case "doctor":

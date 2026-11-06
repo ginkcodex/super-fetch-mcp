@@ -12,7 +12,7 @@ from super_fetch.browser_tier import browser_installed
 from super_fetch.config import Settings
 from super_fetch.pipeline import Pipeline
 
-from conftest import build_pdf
+from conftest import build_image, build_pdf
 
 pytestmark = [
     pytest.mark.anyio,
@@ -40,6 +40,8 @@ SETS_CLEARANCE = """<html><head><title>Just a moment...</title></head><body>
 <script>window._cf_chl_opt = {};
 setTimeout(() => { document.cookie = 'cf_clearance=ok; max-age=3600; path=/'; location.reload(); }, 500);
 </script></body></html>"""
+
+GATED_IMAGE = build_image("PNG", size=(64, 48))
 
 GATED_ARTICLE = (
     "<html><head><title>Gated</title></head><body><article><p>" + "Behind the gate. " * 20 + "</p></article>"
@@ -72,14 +74,18 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         user_agent = self.headers.get("User-Agent", "")
         REQUESTS.append((path, user_agent))
-        if path in ("/gate", "/gate-app"):
+        content_type = "application/pdf" if path.endswith(".pdf") else "text/html; charset=utf-8"
+        if path in ("/gate", "/gate-app", "/gate.png"):
             cleared = "cf_clearance=ok" in self.headers.get("Cookie", "") and "Firefox/" in user_agent
-            status, body = (200, GATED_ARTICLE if path == "/gate" else SPA) if cleared else (403, SETS_CLEARANCE)
+            gated = {"/gate": GATED_ARTICLE, "/gate-app": SPA, "/gate.png": GATED_IMAGE}[path]
+            status, body = (200, gated) if cleared else (403, SETS_CLEARANCE)
+            if cleared and path.endswith(".png"):
+                content_type = "image/png"
         else:
             status, body = ROUTES.get(path, (404, "not found"))
         data = body if isinstance(body, bytes) else body.encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/pdf" if path.endswith(".pdf") else "text/html; charset=utf-8")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -145,6 +151,17 @@ async def test_http_reuses_clearance_the_browser_earned(pipeline, base_url):
     second = await pipeline.fetch(f"{base_url}/gate?page=2")
     assert second.tier == "http (browser cookies)"
     assert "Behind the gate." in second.content
+
+
+async def test_image_behind_challenge(pipeline, base_url):
+    first = await pipeline.fetch_image(f"{base_url}/gate.png?1", referer=f"{base_url}/article")
+    assert first.tier.startswith("browser")
+    assert first.image.data == GATED_IMAGE
+
+    # The clearance the browser earned lets plain HTTP fetch the next one.
+    second = await pipeline.fetch_image(f"{base_url}/gate.png?2", referer=f"{base_url}/article")
+    assert second.tier == "http (browser cookies)"
+    assert second.image.data == GATED_IMAGE
 
 
 async def test_app_behind_reused_clearance_still_escalates(pipeline, base_url):

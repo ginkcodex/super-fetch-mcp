@@ -17,6 +17,7 @@ from .detect import detect_challenge, detect_hard_block, is_spa_shell
 from .extract import DocumentError, Format, html_to_content, pdf_to_content
 from .http_tier import FetchError, HttpFetcher, RawResponse
 from .identity import Identity
+from .imaging import ImageError, PreparedImage, is_svg, prepare_image
 from .urlcheck import SafeBrowsing
 
 Render = Literal["auto", "never", "always"]
@@ -27,6 +28,8 @@ _CACHE_SIZE = 32
 _HOST_CONCURRENCY = 2
 _BROWSER_HOST_TTL = 1800.0
 """Seconds a host whose pages needed the browser goes straight to it, skipping the HTTP attempt."""
+_GONE_STATUSES = {404, 410}
+"""Image responses that mean there is nothing there, so the browser isn't tried."""
 
 
 @dataclass
@@ -41,6 +44,27 @@ class FetchResult:
     needs_js: bool = False
     """The HTTP tier got a JavaScript app shell rather than the content."""
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ImageResult:
+    url: str
+    status: int
+    content_type: str
+    """As the server sent it."""
+    size: int
+    """Bytes downloaded."""
+    tier: str
+    image: PreparedImage | None = None
+    svg: str | None = None
+    """The source of an SVG image, which is text (models can't take it as an image)."""
+    warnings: list[str] = field(default_factory=list)
+
+
+class _ImageResponseError(FetchError):
+    def __init__(self, message: str, status: int):
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass
@@ -79,9 +103,14 @@ class Pipeline:
             await self._safe_browsing.close()
 
     async def fetch(
-        self, url: str, fmt: Format = "markdown", render: Render = "auto", wait_for: str | None = None
+        self,
+        url: str,
+        fmt: Format = "markdown",
+        render: Render = "auto",
+        wait_for: str | None = None,
+        images: bool = True,
     ) -> FetchResult:
-        key = (url, fmt, render, wait_for)
+        key = (url, fmt, render, wait_for, images)
         if cached := self._cached(key):
             return cached
 
@@ -89,7 +118,7 @@ class Pipeline:
             # A parallel call for the same page may have fetched it while this one waited.
             if cached := self._cached(key):
                 return cached
-            result = await self._fetch_uncached(url, fmt, render, wait_for)
+            result = await self._fetch_uncached(url, fmt, render, wait_for, images)
 
         # Cache so follow-up calls with start_index page through identical content.
         # Blocked results are not cached, so a retry gets a fresh attempt.
@@ -117,11 +146,13 @@ class Pipeline:
             if slot.users == 0:
                 del self._host_slots[host]
 
-    async def _fetch_uncached(self, url: str, fmt: Format, render: Render, wait_for: str | None) -> FetchResult:
+    async def _fetch_uncached(
+        self, url: str, fmt: Format, render: Render, wait_for: str | None, images: bool
+    ) -> FetchResult:
         host = urlsplit(url).hostname or ""
         # wait_for only means something once JavaScript runs.
         if render == "always" or (render == "auto" and (wait_for or self._prefers_browser(host))):
-            return await self._fetch_browser(url, fmt, wait_for)
+            return await self._fetch_browser(url, fmt, images, wait_for)
 
         # One time budget for the whole call: the HTTP attempt may use at most half of it when the
         # browser could still take over, and the browser gets whatever is left (at least half).
@@ -134,20 +165,20 @@ class Pipeline:
             # Some protections drop or reset non-browser connections outright.
             if render == "never":
                 raise
-            result = await self._fetch_browser(url, fmt, wait_for, http_error=exc, deadline=deadline)
-            self._learn(host, url, result, reused_clearance)
+            result = await self._fetch_browser(url, fmt, images, wait_for, http_error=exc, deadline=deadline)
+            self._learn(host, url, result.blocked_by, reused_clearance)
             return result
 
         tier = "http (browser cookies)" if reused_clearance else "http"
-        result = await asyncio.to_thread(self._process, raw, fmt, tier)
+        result = await asyncio.to_thread(self._process, raw, fmt, images, tier)
         if render == "never" or not (result.blocked_by or result.needs_js):
             return result
         try:
-            browser_result = await self._fetch_browser(url, fmt, wait_for, deadline=deadline)
+            browser_result = await self._fetch_browser(url, fmt, images, wait_for, deadline=deadline)
         except FetchError as exc:
             result.warnings.append(f"Retrying in the browser failed: {exc}")
             return result
-        self._learn(host, url, browser_result, reused_clearance)
+        self._learn(host, url, browser_result.blocked_by, reused_clearance)
         return browser_result
 
     def _prefers_browser(self, host: str) -> bool:
@@ -159,19 +190,20 @@ class Pipeline:
             return False
         return True
 
-    def _learn(self, host: str, url: str, result: FetchResult, reused_clearance: bool) -> None:
+    def _learn(self, host: str, url: str, blocked_by: str | None, reused_clearance: bool) -> None:
         """After the browser got a page that HTTP couldn't, decide how to fetch this host next time.
 
         If the browser earned a clearance cookie the HTTP tier hasn't tried yet, HTTP gets another
         go with it; otherwise skip straight to the browser for a while.
         """
-        if result.blocked_by is None and (reused_clearance or not self.identity.has_clearance(url)):
+        if blocked_by is None and (reused_clearance or not self.identity.has_clearance(url)):
             self._browser_hosts[host] = time.monotonic() + _BROWSER_HOST_TTL
 
     async def _fetch_browser(
         self,
         url: str,
         fmt: Format,
+        images: bool,
         wait_for: str | None,
         http_error: FetchError | None = None,
         deadline: float | None = None,
@@ -187,9 +219,70 @@ class Pipeline:
             if isinstance(exc, BrowserNotInstalledError):
                 raise http_error from None
             raise FetchError(f"{http_error} Retrying in the browser also failed: {exc}") from exc
-        return await asyncio.to_thread(self._process, raw, fmt, f"browser ({self._browser.mode})")
+        return await asyncio.to_thread(self._process, raw, fmt, images, f"browser ({self._browser.mode})")
 
-    def _process(self, raw: RawResponse, fmt: Format, tier: str) -> FetchResult:
+    async def fetch_image(self, url: str, referer: str | None = None, render: Render = "auto") -> ImageResult:
+        """Download an image as the page at `referer` would load it; the browser takes over when blocked."""
+        host = urlsplit(url).hostname or ""
+        async with self._host_slot(host):
+            timeout = self._settings.timeout
+            browser_tier = f"browser ({self._browser.mode})"
+            if render == "always" or (render == "auto" and self._prefers_browser(host)):
+                raw = await self._browser.fetch(url, timeout=timeout, referer=referer)
+                return await asyncio.to_thread(self._process_image, raw, browser_tier)
+
+            # The same time budget split as for pages (see `_fetch_uncached`).
+            deadline = time.monotonic() + timeout
+            reused_clearance = self.identity.has_clearance(url)
+            try:
+                raw = await self._http.fetch(url, timeout if render == "never" else timeout / 2, image_on=referer)
+                tier = "http (browser cookies)" if reused_clearance else "http"
+                return await asyncio.to_thread(self._process_image, raw, tier)
+            except FetchError as exc:
+                if render == "never" or (isinstance(exc, _ImageResponseError) and exc.status in _GONE_STATUSES):
+                    raise
+                http_error = exc
+
+            try:
+                raw = await self._browser.fetch(
+                    url, timeout=max(deadline - time.monotonic(), timeout / 2), referer=referer
+                )
+                result = await asyncio.to_thread(self._process_image, raw, browser_tier)
+            except BrowserNotInstalledError:
+                raise http_error from None
+            except FetchError as exc:
+                raise FetchError(f"{http_error} Retrying in the browser also failed: {exc}") from exc
+            self._learn(host, url, None, reused_clearance)
+            return result
+
+    def _process_image(self, raw: RawResponse, tier: str) -> ImageResult:
+        content_type = raw.content_type
+        if raw.status >= 400:
+            challenge = detect_challenge(raw.status, raw.headers, raw.text()) if _is_html(raw) else None
+            reason = f" (a {challenge} bot challenge)" if challenge else ""
+            raise _ImageResponseError(f"{raw.url} returned HTTP {raw.status}{reason} instead of the image.", raw.status)
+        if raw.truncated:
+            raise FetchError(
+                f"The image at {raw.url} is larger than {self._settings.max_bytes} bytes (SUPER_FETCH_MAX_BYTES)."
+            )
+        result = ImageResult(
+            url=raw.url, status=raw.status, content_type=content_type or "unknown", size=len(raw.body), tier=tier
+        )
+        result.warnings.extend(raw.warnings)
+        if is_svg(raw.body, content_type):
+            result.svg = raw.text()
+            return result
+        if _is_html(raw):
+            challenge = detect_challenge(raw.status, raw.headers, raw.text())
+            reason = f": a {challenge} bot challenge" if challenge else ""
+            raise _ImageResponseError(f"{raw.url} returned a web page instead of an image{reason}.", raw.status)
+        try:
+            result.image = prepare_image(raw.body)
+        except ImageError as exc:
+            raise FetchError(f"{exc} ({raw.url}, Content-Type: {content_type or 'none'})") from exc
+        return result
+
+    def _process(self, raw: RawResponse, fmt: Format, images: bool, tier: str) -> FetchResult:
         result = FetchResult(
             url=raw.url, status=raw.status, content_type=raw.content_type or "unknown", content="", tier=tier
         )
@@ -218,7 +311,7 @@ class Pipeline:
                     "This looks like a JavaScript app shell, so content is probably missing. "
                     "Use render='always' to load it in the browser."
                 )
-            result.title, result.content = html_to_content(html, raw.url, fmt)
+            result.title, result.content = html_to_content(html, raw.url, fmt, images)
         elif raw.content_type == "application/pdf" or raw.body.startswith(b"%PDF-"):
             if raw.truncated:
                 raise FetchError(

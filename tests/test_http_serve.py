@@ -89,7 +89,7 @@ async def test_requests_without_the_right_token_are_rejected(token_url):
 async def test_agent_with_the_token_can_fetch(token_url, page_url):
     http = create_mcp_http_client(headers={"Authorization": f"Bearer {TOKEN}"})
     async with http, Client(streamable_http_client(token_url, http_client=http)) as client:
-        assert [t.name for t in (await client.list_tools()).tools] == ["fetch"]
+        assert [t.name for t in (await client.list_tools()).tools] == ["fetch", "fetch_image"]
         result = await client.call_tool("fetch", {"url": page_url, "render": "never"})
     text = result.content[0].text
     assert "Title: Served page" in text

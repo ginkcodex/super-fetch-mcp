@@ -12,6 +12,7 @@ dependencies = [
     "curl-cffi>=0.17.0",
     "markdownify>=1.2.3",
     "mcp>=2.3.0",
+    "pillow>=13.0.0",
     "platformdirs>=4.14.0",
     "pypdf>=6.21.4",
     "trafilatura>=2.3.1",

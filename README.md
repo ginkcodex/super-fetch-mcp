@@ -31,14 +31,32 @@ wait their turn, and parallel calls for the same page share one download.
 
 ## Tools
 
-`fetch(url, format="markdown", start_index=0, max_length=20000, render="auto", wait_for=None)`
+`fetch(url, format="markdown", start_index=0, max_length=20000, render="auto", wait_for=None, images=True)`
 
 - `format`: `markdown` (main content), `text`, or `html` (raw source).
 - `render`: `auto` (browser only when needed), `always`, or `never` (HTTP only).
 - `wait_for`: CSS selector to wait for before reading (uses the browser).
+- `images`: keep the page's images where they appear, as `[Image: alt text] URL` lines (the
+  description is the page's own alt text; figure captions follow as text). Icons, tracking
+  pixels and images the page marks as decorative are left out. `images=False` drops them all.
+  Use `fetch_image` to look at one.
 - Long content is returned in chunks; the output ends with the `start_index` to request next.
 - The header lists the final URL, HTTP status, title, which tier fetched it, and warnings (challenge
   not passed, JS app shell, HTTP error, truncated body).
+
+`fetch_image(url, referer=None, render="auto")`
+
+Returns the image itself (MCP image content) so the agent's model can see it, with a short header
+(final URL, size, dimensions, which tier fetched it).
+
+- `referer`: the page the image is on. Many sites only serve images to their own pages; with it the
+  request looks like the browser loading an `<img>` on that page (Referer, image `Accept` and
+  `Sec-Fetch-*` headers).
+- Images behind bot protection go through the same tiers as pages: the browser takes over when the
+  HTTP tier gets a challenge or a refusal, and clearance it earns is reused for the next image.
+- Images are passed through as they are when a model can take them. Larger than 1568 px or 1 MB, or
+  in another format (AVIF, BMP, TIFF, ICO, …), they are scaled down and sent as JPEG (PNG when
+  transparent). Animated images show their first frame. SVG images are returned as their source text.
 
 ## Install
 
@@ -308,7 +326,10 @@ writes to its config.
 super-fetch                    # run the MCP server over stdio (what agents launch)
 super-fetch serve --http       # run it over HTTP instead (--host, --port; see "Run it on a server")
 super-fetch fetch <url>        # print what the tool would return, for testing
-                               #   (--render, --wait-for, --format, --start-index, --max-length)
+                               #   (--render, --wait-for, --format, --start-index, --max-length,
+                               #   --no-images)
+super-fetch image <url>        # fetch an image like fetch_image (--referer, --render; -o FILE
+                               #   saves what the agent would see)
 super-fetch install            # download the browser
 super-fetch doctor             # check both tiers (and the Safe Browsing key, if set); show the
                                #   network fingerprint servers see
@@ -374,7 +395,8 @@ Good to know:
   URLs, as long as Google says for listed ones.
 - If the lookup fails (wrong key, quota used up, Google unreachable), the page is refused rather than
   fetched unchecked. The error says why.
-- Only page addresses are checked, not the images, scripts and frames a page loads. In the browser,
+- Only the addresses the tools are given are checked (pages, and images for `fetch_image`), not the
+  images, scripts and frames a page loads along the way. In the browser,
   redirects are checked where they end up, after the page has loaded; nothing from a listed page is
   returned.
 - The lists aren't perfect: a new phishing page may not be listed yet, and a safe page is
